@@ -228,45 +228,62 @@ static int jtagspi_probe(struct flash_bank *bank)
 	return ERROR_OK;
 }
 
-static void jtagspi_read_status(struct flash_bank *bank, uint32_t *status)
+static int jtagspi_read_status(struct flash_bank *bank, uint32_t *status)
 {
 	uint8_t buf;
-	if (jtagspi_cmd(bank, SPIFLASH_READ_STATUS, NULL, &buf, -8) == ERROR_OK) {
+	int retval = jtagspi_cmd(bank, SPIFLASH_READ_STATUS, NULL, &buf, -8);
+	if (retval == ERROR_OK) {
 		*status = buf;
-		/* LOG_DEBUG("status=0x%08" PRIx32, *status); */
+		// LOG_DEBUG("status=0x%08" PRIx32, *status);
+	} else {
+		*status = 0; // Установить значение по умолчанию или код ошибки
+		LOG_ERROR("Failed to read status register");
 	}
+	return retval; // Вернуть код результата выполнения функции jtagspi_cmd
 }
 
 static int jtagspi_wait(struct flash_bank *bank, int timeout_ms)
 {
-	uint32_t status;
-	int64_t t0 = timeval_ms();
-	int64_t dt;
+    uint32_t status = 0;
+    int retval;  // Для хранения результата jtagspi_read_status
+    int64_t t0 = timeval_ms();
+    int64_t dt;
 
-	do {
-		dt = timeval_ms() - t0;
-		jtagspi_read_status(bank, &status);
-		if ((status & SPIFLASH_BSY_BIT) == 0) {
-			LOG_DEBUG("waited %" PRId64 " ms", dt);
-			return ERROR_OK;
-		}
-		alive_sleep(1);
-	} while (dt <= timeout_ms);
+    do {
+        dt = timeval_ms() - t0;
+        retval = jtagspi_read_status(bank, &status); // Теперь мы сохраняем результат функции
+        if (retval != ERROR_OK) {
+            // Обработка ошибки чтения статуса
+            LOG_ERROR("Failed to read status register");
+            return retval; // Возврат кода ошибки
+        }
+        if ((status & SPIFLASH_BSY_BIT) == 0) {
+            LOG_DEBUG("waited %" PRId64 " ms", dt);
+            return ERROR_OK;
+        }
+        alive_sleep(1);
+    } while (dt <= timeout_ms);
 
-	LOG_ERROR("timeout, device still busy");
-	return ERROR_FAIL;
+    LOG_ERROR("timeout, device still busy");
+    return ERROR_FAIL;
 }
 
 static int jtagspi_write_enable(struct flash_bank *bank)
 {
 	uint32_t status;
+	if (jtagspi_cmd(bank, SPIFLASH_WRITE_ENABLE, NULL, NULL, 0) != ERROR_OK)
+		return ERROR_FAIL;
 
-	jtagspi_cmd(bank, SPIFLASH_WRITE_ENABLE, NULL, NULL, 0);
-	jtagspi_read_status(bank, &status);
+	if (jtagspi_read_status(bank, &status) != ERROR_OK) {
+		LOG_ERROR("Failed to read status after write enable");
+		return ERROR_FAIL;
+	}
+
 	if ((status & SPIFLASH_WE_BIT) == 0) {
 		LOG_ERROR("Cannot enable write to flash. Status=0x%08" PRIx32, status);
 		return ERROR_FAIL;
 	}
+
 	return ERROR_OK;
 }
 
